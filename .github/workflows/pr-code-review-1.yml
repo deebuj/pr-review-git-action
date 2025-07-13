@@ -95,22 +95,21 @@ jobs:
         if: steps.git-changed-files.outputs.any_changed == 'true' || steps.changed-files.outputs.any_changed == 'true' || steps.manual-changed-files.outputs.any_changed == 'true'
         run: |
           npm init -y
-          npm install --save-dev eslint @eslint/js eslint-plugin-mozilla
+          npm install --save-dev eslint @eslint/js
 
       - name: Create ESLint config
         if: steps.git-changed-files.outputs.any_changed == 'true' || steps.changed-files.outputs.any_changed == 'true' || steps.manual-changed-files.outputs.any_changed == 'true'
         run: |
           cat > eslint.config.js << 'EOF'
-          import js from '@eslint/js';
-          import mozilla from 'eslint-plugin-mozilla';
+          const js = require('@eslint/js');
           
-          export default [
+          module.exports = [
             js.configs.recommended,
             {
               files: ['**/*.js'],
               languageOptions: {
                 ecmaVersion: 2022,
-                sourceType: 'module',
+                sourceType: 'script',
                 globals: {
                   chrome: 'readonly',
                   browser: 'readonly',
