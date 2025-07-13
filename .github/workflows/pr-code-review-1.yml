@@ -3,7 +3,7 @@ name: Pull Request Code Review and Summary
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-    branches: [test]
+    branches: [main]
 
 permissions:
   contents: read
@@ -295,22 +295,24 @@ jobs:
               -d @tech-payload.json > tech-response.json
             
             if [ -f tech-response.json ]; then
-              python3 -c "
-                import json
-                import sys
-                try:
-                    with open('tech-response.json', 'r') as f:
-                        data = json.load(f)
-                    content = data['choices'][0]['message']['content']
-                    print('## AI-Powered Technical Analysis')
-                    print('')
-                    print(content)
-                    print('')
-                except Exception as e:
-                    print('## Technical Summary (Fallback)')
-                    print('')
-                    sys.exit(1)
-              " > technical-summary.md
+              cat > parse_tech_response.py << 'EOF'
+import json
+import sys
+
+try:
+    with open('tech-response.json', 'r') as f:
+        data = json.load(f)
+    content = data['choices'][0]['message']['content']
+    print('## AI-Powered Technical Analysis')
+    print('')
+    print(content)
+    print('')
+except Exception as e:
+    print('## Technical Summary (Fallback)')
+    print('')
+    sys.exit(1)
+EOF
+              python3 parse_tech_response.py > technical-summary.md
             else
               echo "## Technical Summary (Fallback)" > technical-summary.md
             fi
@@ -455,23 +457,25 @@ jobs:
             
             # Extract the response
             if [ -f openai-response.json ]; then
-              python3 -c "
-                import json
-                import sys
-                try:
-                    with open('openai-response.json', 'r') as f:
-                        data = json.load(f)
-                    content = data['choices'][0]['message']['content']
-                    print('## AI-Powered Business Impact Analysis')
-                    print('')
-                    print(content)
-                except Exception as e:
-                    print('## Business Impact Summary (Fallback)')
-                    print('')
-                    print('*AI analysis unavailable - using rule-based analysis*')
-                    print('')
-                    sys.exit(1)
-              " > business-summary.md
+              cat > parse_business_response.py << 'EOF'
+import json
+import sys
+
+try:
+    with open('openai-response.json', 'r') as f:
+        data = json.load(f)
+    content = data['choices'][0]['message']['content']
+    print('## AI-Powered Business Impact Analysis')
+    print('')
+    print(content)
+except Exception as e:
+    print('## Business Impact Summary (Fallback)')
+    print('')
+    print('*AI analysis unavailable - using rule-based analysis*')
+    print('')
+    sys.exit(1)
+EOF
+              python3 parse_business_response.py > business-summary.md
             else
               echo "Failed to get AI response, using fallback analysis"
               echo "## Business Impact Summary (Fallback)" > business-summary.md
