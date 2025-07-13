@@ -95,7 +95,7 @@ jobs:
         if: steps.git-changed-files.outputs.any_changed == 'true' || steps.changed-files.outputs.any_changed == 'true' || steps.manual-changed-files.outputs.any_changed == 'true'
         run: |
           npm init -y
-          npm install --save-dev eslint @eslint/js
+          npm install --save-dev eslint @eslint/js eslint-formatter-unix
 
       - name: Create ESLint config
         if: steps.git-changed-files.outputs.any_changed == 'true' || steps.changed-files.outputs.any_changed == 'true' || steps.manual-changed-files.outputs.any_changed == 'true'
@@ -167,14 +167,27 @@ jobs:
               for file in $JS_FILES; do
                 if [ -f "$file" ]; then
                   echo "#### $file" >> code-review-results.md
-                  npx eslint "$file" --format unix 2>&1 | head -20 >> eslint-output.txt || true
                   
-                  if [ -s eslint-output.txt ]; then
-                    echo '```' >> code-review-results.md
-                    cat eslint-output.txt >> code-review-results.md
-                    echo '```' >> code-review-results.md
+                  # Try unix formatter first, fallback to stylish if not available
+                  if npx eslint "$file" --format unix 2>/dev/null 1>eslint-output.txt; then
+                    # Unix formatter worked
+                    if [ -s eslint-output.txt ]; then
+                      echo '```' >> code-review-results.md
+                      head -20 eslint-output.txt >> code-review-results.md
+                      echo '```' >> code-review-results.md
+                    else
+                      echo "✓ No issues found" >> code-review-results.md
+                    fi
                   else
-                    echo "✓ No issues found" >> code-review-results.md
+                    # Fallback to stylish formatter
+                    npx eslint "$file" --format stylish 2>&1 | head -20 > eslint-output.txt || true
+                    if [ -s eslint-output.txt ]; then
+                      echo '```' >> code-review-results.md
+                      cat eslint-output.txt >> code-review-results.md
+                      echo '```' >> code-review-results.md
+                    else
+                      echo "✓ No issues found" >> code-review-results.md
+                    fi
                   fi
                   echo "" >> code-review-results.md
                   rm -f eslint-output.txt
