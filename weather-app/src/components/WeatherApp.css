@@ -41,11 +41,20 @@
   font-size: 16px;
   outline: none;
   transition: all 0.3s ease;
+  background: white;
+  cursor: pointer;
 }
 
 .search-input:focus {
   border-color: #74b9ff;
   box-shadow: 0 0 0 3px rgba(116, 185, 255, 0.2);
+}
+
+/* Style the select dropdown */
+.search-input option {
+  padding: 10px;
+  background: white;
+  color: #2d3436;
 }
 
 .search-button {
