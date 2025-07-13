@@ -1,0 +1,593 @@
+name: Pull Request Code Review and Summary
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [test]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  code-review:
+    runs-on: ubuntu-latest
+    name: Code Review and Analysis
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get changed files
+        id: changed-files
+        continue-on-error: true
+        uses: tj-actions/changed-files@v41
+        with:
+          files: |
+            **/*.js
+            **/*.json
+            **/*.html
+            **/*.css
+            **/*.md
+
+      - name: Get changed files using git (primary method)
+        id: git-changed-files
+        run: |
+          echo "Getting changed files using git diff..."
+          
+          # Get the list of changed files
+          git diff --name-only origin/${{ github.event.pull_request.base.ref }}...HEAD > all_changed_files.txt
+          
+          # Filter for the file types we care about
+          grep -E '\.(js|json|html|css|md)$' all_changed_files.txt > filtered_changed_files.txt || touch filtered_changed_files.txt
+          
+          if [ -s filtered_changed_files.txt ]; then
+            echo "any_changed=true" >> $GITHUB_OUTPUT
+            echo "all_changed_files=$(cat filtered_changed_files.txt | tr '\n' ' ' | sed 's/[[:space:]]*$//')" >> $GITHUB_OUTPUT
+            echo "all_changed_files_count=$(cat filtered_changed_files.txt | wc -l)" >> $GITHUB_OUTPUT
+          else
+            echo "any_changed=false" >> $GITHUB_OUTPUT
+            echo "all_changed_files=" >> $GITHUB_OUTPUT
+            echo "all_changed_files_count=0" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "Changed files:"
+          cat filtered_changed_files.txt || echo "No matching files found"
+
+      - name: Debug changed files output
+        run: |
+          echo "=== tj-actions/changed-files output ==="
+          echo "Any changed: ${{ steps.changed-files.outputs.any_changed }}"
+          echo "All changed files: ${{ steps.changed-files.outputs.all_changed_files }}"
+          echo "Changed files count: ${{ steps.changed-files.outputs.all_changed_files_count }}"
+          echo ""
+          echo "=== git-changed-files output ==="
+          echo "Any changed: ${{ steps.git-changed-files.outputs.any_changed }}"
+          echo "All changed files: ${{ steps.git-changed-files.outputs.all_changed_files }}"
+          echo "Changed files count: ${{ steps.git-changed-files.outputs.all_changed_files_count }}"
+
+      - name: Fallback - Get changed files manually
+        id: manual-changed-files
+        if: failure()
+        run: |
+          echo "Both changed files methods failed, using basic git diff as final fallback"
+          git diff --name-only origin/${{ github.event.pull_request.base.ref }}...HEAD > changed_files.txt
+          if [ -s changed_files.txt ]; then
+            echo "any_changed=true" >> $GITHUB_OUTPUT
+            echo "all_changed_files=$(cat changed_files.txt | tr '\n' ' ')" >> $GITHUB_OUTPUT
+          else
+            echo "any_changed=false" >> $GITHUB_OUTPUT
+            echo "all_changed_files=" >> $GITHUB_OUTPUT
+          fi
+          cat changed_files.txt
+
+      - name: Setup Node.js for linting
+        if: steps.git-changed-files.outputs.any_changed == 'true' || steps.changed-files.outputs.any_changed == 'true' || steps.manual-changed-files.outputs.any_changed == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install ESLint and dependencies
+        if: steps.git-changed-files.outputs.any_changed == 'true' || steps.changed-files.outputs.any_changed == 'true' || steps.manual-changed-files.outputs.any_changed == 'true'
+        run: |
+          npm init -y
+          npm install --save-dev eslint @eslint/js eslint-plugin-mozilla
+
+      - name: Create ESLint config
+        if: steps.git-changed-files.outputs.any_changed == 'true' || steps.changed-files.outputs.any_changed == 'true' || steps.manual-changed-files.outputs.any_changed == 'true'
+        run: |
+          cat > eslint.config.js << 'EOF'
+          import js from '@eslint/js';
+          import mozilla from 'eslint-plugin-mozilla';
+          
+          export default [
+            js.configs.recommended,
+            {
+              files: ['**/*.js'],
+              languageOptions: {
+                ecmaVersion: 2022,
+                sourceType: 'module',
+                globals: {
+                  chrome: 'readonly',
+                  browser: 'readonly',
+                  console: 'readonly',
+                  document: 'readonly',
+                  window: 'readonly',
+                  localStorage: 'readonly',
+                  sessionStorage: 'readonly',
+                  fetch: 'readonly',
+                  URL: 'readonly',
+                  URLSearchParams: 'readonly',
+                  setTimeout: 'readonly',
+                  setInterval: 'readonly',
+                  clearTimeout: 'readonly',
+                  clearInterval: 'readonly'
+                }
+              },
+              rules: {
+                'no-unused-vars': 'warn',
+                'no-undef': 'error',
+                'no-console': 'warn',
+                'semi': ['error', 'always'],
+                'quotes': ['warn', 'single'],
+                'eqeqeq': 'error',
+                'no-var': 'error',
+                'prefer-const': 'warn'
+              }
+            }
+          ];
+          EOF
+
+      - name: Run ESLint on JavaScript files
+        if: steps.git-changed-files.outputs.any_changed == 'true' || steps.changed-files.outputs.any_changed == 'true' || steps.manual-changed-files.outputs.any_changed == 'true'
+        id: eslint
+        run: |
+          echo "## Code Review Results" > code-review-results.md
+          echo "" >> code-review-results.md
+          
+          # Use git-changed-files output first, then fallback to other methods
+          ALL_CHANGED_FILES="${{ steps.git-changed-files.outputs.all_changed_files }}"
+          if [ -z "$ALL_CHANGED_FILES" ]; then
+            ALL_CHANGED_FILES="${{ steps.changed-files.outputs.all_changed_files }}"
+          fi
+          if [ -z "$ALL_CHANGED_FILES" ]; then
+            ALL_CHANGED_FILES="${{ steps.manual-changed-files.outputs.all_changed_files }}"
+          fi
+          
+          if [ -n "$ALL_CHANGED_FILES" ]; then
+            JS_FILES=$(echo "$ALL_CHANGED_FILES" | tr ' ' '\n' | grep '\.js$' || true)
+            
+            if [ -n "$JS_FILES" ]; then
+              echo "### JavaScript Files Analysis" >> code-review-results.md
+              echo "" >> code-review-results.md
+              
+              for file in $JS_FILES; do
+                if [ -f "$file" ]; then
+                  echo "#### $file" >> code-review-results.md
+                  npx eslint "$file" --format unix 2>&1 | head -20 >> eslint-output.txt || true
+                  
+                  if [ -s eslint-output.txt ]; then
+                    echo '```' >> code-review-results.md
+                    cat eslint-output.txt >> code-review-results.md
+                    echo '```' >> code-review-results.md
+                  else
+                    echo "✓ No issues found" >> code-review-results.md
+                  fi
+                  echo "" >> code-review-results.md
+                  rm -f eslint-output.txt
+                fi
+              done
+            else
+              echo "No JavaScript files to analyze." >> code-review-results.md
+            fi
+          fi
+
+      - name: Validate JSON files
+        if: steps.git-changed-files.outputs.any_changed == 'true' || steps.changed-files.outputs.any_changed == 'true' || steps.manual-changed-files.outputs.any_changed == 'true'
+        run: |
+          echo "### JSON Files Validation" >> code-review-results.md
+          echo "" >> code-review-results.md
+          
+          # Use git-changed-files output first, then fallback to other methods
+          ALL_CHANGED_FILES="${{ steps.git-changed-files.outputs.all_changed_files }}"
+          if [ -z "$ALL_CHANGED_FILES" ]; then
+            ALL_CHANGED_FILES="${{ steps.changed-files.outputs.all_changed_files }}"
+          fi
+          if [ -z "$ALL_CHANGED_FILES" ]; then
+            ALL_CHANGED_FILES="${{ steps.manual-changed-files.outputs.all_changed_files }}"
+          fi
+          
+          JSON_FILES=$(echo "$ALL_CHANGED_FILES" | tr ' ' '\n' | grep '\.json$' || true)
+          
+          if [ -n "$JSON_FILES" ]; then
+            for file in $JSON_FILES; do
+              if [ -f "$file" ]; then
+                echo "#### $file" >> code-review-results.md
+                if python3 -m json.tool "$file" > /dev/null 2>&1; then
+                  echo "✓ Valid JSON" >> code-review-results.md
+                else
+                  echo "✗ Invalid JSON syntax" >> code-review-results.md
+                fi
+                echo "" >> code-review-results.md
+              fi
+            done
+          else
+            echo "No JSON files to validate." >> code-review-results.md
+          fi
+
+      - name: Get PR diff for LLM analysis
+        id: get-diff
+        run: |
+          # Get the diff content
+          git diff origin/${{ github.event.pull_request.base.ref }}...HEAD > pr-diff.txt
+          
+          # Limit diff size for API (OpenAI has token limits)
+          head -c 50000 pr-diff.txt > pr-diff-limited.txt
+          
+          # Get PR metadata
+          echo "PR_TITLE=${{ github.event.pull_request.title }}" >> $GITHUB_ENV
+          echo "PR_BODY=${{ github.event.pull_request.body }}" >> $GITHUB_ENV
+          echo "PR_USER=${{ github.event.pull_request.user.login }}" >> $GITHUB_ENV
+
+      - name: Generate LLM-powered technical summary
+        id: llm-tech-summary
+        run: |
+          # Create technical analysis prompt
+          cat > tech-prompt.txt << EOF
+          You are a senior software engineer reviewing a Chrome extension pull request for a ticket purchasing application.
+          
+          Please analyze the code changes and provide:
+          
+          1. **Code Quality Assessment** - Are there any concerns?
+          2. **Architecture Impact** - How does this affect the overall system?
+          3. **Performance Implications** - Will this impact performance?
+          4. **Security Considerations** - Any security concerns?
+          5. **Technical Debt** - Does this add or reduce technical debt?
+          6. **Dependencies** - Are new dependencies introduced?
+          7. **Browser Compatibility** - Any compatibility concerns?
+          
+          Be specific and reference actual code changes when possible.
+          
+          PR Title: $PR_TITLE
+          PR Author: $PR_USER
+          
+          Code Changes:
+          EOF
+          
+          # Add the diff content only if the file exists
+          if [ -f pr-diff-limited.txt ]; then
+            cat pr-diff-limited.txt >> tech-prompt.txt
+          else
+            echo "No diff content available" >> tech-prompt.txt
+          fi
+          
+          # Call OpenAI API for technical analysis
+          if [ -n "${{ secrets.OPENAI_API_KEY }}" ]; then
+            echo "Generating AI-powered technical analysis..."
+            
+            # Create a safer JSON payload by encoding the content properly
+            TECH_CONTENT=$(cat tech-prompt.txt | python3 -c "import sys; import json; content = sys.stdin.read(); print(json.dumps(content))")
+            
+            # Create the JSON payload directly with variables
+            echo '{
+              "model": "gpt-4o-mini",
+              "messages": [
+                {
+                  "role": "system",
+                  "content": "You are a senior software engineer specializing in Chrome extensions, JavaScript, and web technologies. Provide detailed technical insights for code reviewers."
+                },
+                {
+                  "role": "user",
+                  "content": '"$TECH_CONTENT"'
+                }
+              ],
+              "max_tokens": 2000,
+              "temperature": 0.2
+            }' > tech-payload.json
+            
+            curl -s -X POST "https://api.openai.com/v1/chat/completions" \
+              -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
+              -H "Content-Type: application/json" \
+              -d @tech-payload.json > tech-response.json
+            
+            if [ -f tech-response.json ]; then
+              python3 -c "
+                import json
+                import sys
+                try:
+                    with open('tech-response.json', 'r') as f:
+                        data = json.load(f)
+                    content = data['choices'][0]['message']['content']
+                    print('## AI-Powered Technical Analysis')
+                    print('')
+                    print(content)
+                    print('')
+                except Exception as e:
+                    print('## Technical Summary (Fallback)')
+                    print('')
+                    sys.exit(1)
+              " > technical-summary.md
+            else
+              echo "## Technical Summary (Fallback)" > technical-summary.md
+            fi
+          else
+            echo "## Technical Summary (Rule-Based)" > technical-summary.md
+          fi
+          
+          # Add basic technical summary if AI fails
+          if [ ! -s technical-summary.md ] || grep -q "Fallback" technical-summary.md; then
+            echo "" >> technical-summary.md
+            echo "*Add OPENAI_API_KEY secret for AI-powered analysis*" >> technical-summary.md
+            echo "" >> technical-summary.md
+            
+            # Get PR details
+            PR_TITLE="${{ github.event.pull_request.title }}"
+            
+            echo "**PR Title:** $PR_TITLE" >> technical-summary.md
+            echo "" >> technical-summary.md
+            
+            # Analyze changed files
+            echo "### Changed Files Analysis" >> technical-summary.md
+            echo "" >> technical-summary.md
+            
+            # Use git-changed-files output first, then fallback to other methods
+            ALL_FILES="${{ steps.git-changed-files.outputs.all_changed_files }}"
+            if [ -z "$ALL_FILES" ]; then
+              ALL_FILES="${{ steps.changed-files.outputs.all_changed_files }}"
+            fi
+            if [ -z "$ALL_FILES" ]; then
+              ALL_FILES="${{ steps.manual-changed-files.outputs.all_changed_files }}"
+            fi
+            
+            if [ -n "$ALL_FILES" ]; then
+              echo "**Files modified:** $(echo $ALL_FILES | wc -w)" >> technical-summary.md
+              echo "" >> technical-summary.md
+              
+              # Categorize files
+              JS_COUNT=$(echo "$ALL_FILES" | tr ' ' '\n' | grep -c '\.js$' || echo "0")
+              CSS_COUNT=$(echo "$ALL_FILES" | tr ' ' '\n' | grep -c '\.css$' || echo "0")
+              HTML_COUNT=$(echo "$ALL_FILES" | tr ' ' '\n' | grep -c '\.html$' || echo "0")
+              JSON_COUNT=$(echo "$ALL_FILES" | tr ' ' '\n' | grep -c '\.json$' || echo "0")
+              
+              echo "- JavaScript files: $JS_COUNT" >> technical-summary.md
+              echo "- CSS files: $CSS_COUNT" >> technical-summary.md
+              echo "- HTML files: $HTML_COUNT" >> technical-summary.md
+              echo "- JSON files: $JSON_COUNT" >> technical-summary.md
+              echo "" >> technical-summary.md
+              
+              # Show file list
+              echo "### Modified Files" >> technical-summary.md
+              echo "" >> technical-summary.md
+              for file in $ALL_FILES; do
+                echo "- \`$file\`" >> technical-summary.md
+              done
+              echo "" >> technical-summary.md
+            fi
+            
+            # Check for specific patterns
+            echo "### Code Patterns Detected" >> technical-summary.md
+            echo "" >> technical-summary.md
+            
+            # Check for Chrome extension specific changes
+            if echo "$ALL_FILES" | grep -q "manifest.json"; then
+              echo "- Chrome extension manifest changes detected" >> technical-summary.md
+            fi
+            
+            if echo "$ALL_FILES" | grep -q "service_worker\|background"; then
+              echo "- Service worker/background script changes" >> technical-summary.md
+            fi
+            
+            if echo "$ALL_FILES" | grep -q "content\|inject"; then
+              echo "- Content script changes detected" >> technical-summary.md
+            fi
+            
+            if echo "$ALL_FILES" | grep -q "popup\|options"; then
+              echo "- UI component changes (popup/options)" >> technical-summary.md
+            fi
+          fi
+
+      - name: Generate LLM-powered business summary
+        id: llm-business-summary
+        run: |
+          # Create the prompt for the LLM
+          cat > llm-prompt.txt << EOF
+          You are a technical business analyst reviewing a Chrome extension pull request for a ticket purchasing application called "TicketBoat". 
+          
+          The extension helps users track purchases across ticket vendors like AXS, Etix, and Ticketmaster.
+          
+          Please analyze the following PR and provide:
+          
+          1. **Business Impact Assessment** (High/Medium/Low/Minimal)
+          2. **User-Facing Changes** - What will users notice?
+          3. **Risk Assessment** - What could go wrong?
+          4. **Feature Areas Affected** - Which parts of the app are touched?
+          5. **Recommended Testing Strategy** - Specific test scenarios
+          6. **Business Value** - Why is this change beneficial?
+          
+          Keep your response concise but comprehensive. Use emojis for visual clarity.
+          
+          PR Title: $PR_TITLE
+          PR Author: $PR_USER
+          PR Description: $PR_BODY
+          
+          Code Changes:
+          EOF
+          
+          # Add the diff content to the prompt only if the file exists
+          if [ -f pr-diff-limited.txt ]; then
+            cat pr-diff-limited.txt >> llm-prompt.txt
+          else
+            echo "No diff content available" >> llm-prompt.txt
+          fi
+          
+          # Call OpenAI API (if API key is available)
+          if [ -n "${{ secrets.OPENAI_API_KEY }}" ]; then
+            echo "Generating AI-powered business analysis..."
+            
+            # Create a safer JSON payload by encoding the content properly
+            BUSINESS_CONTENT=$(cat llm-prompt.txt | python3 -c "import sys; import json; content = sys.stdin.read(); print(json.dumps(content))")
+            
+            # Create JSON payload for OpenAI API directly with variables
+            echo '{
+              "model": "gpt-4o-mini",
+              "messages": [
+                {
+                  "role": "system",
+                  "content": "You are a technical business analyst specializing in Chrome extensions and e-commerce applications. Provide clear, actionable insights for business stakeholders."
+                },
+                {
+                  "role": "user",
+                  "content": '"$BUSINESS_CONTENT"'
+                }
+              ],
+              "max_tokens": 2000,
+              "temperature": 0.3
+            }' > openai-payload.json
+            # Make API call to OpenAI
+            curl -s -X POST "https://api.openai.com/v1/chat/completions" \
+              -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
+              -H "Content-Type: application/json" \
+              -d @openai-payload.json > openai-response.json
+            
+            # Extract the response
+            if [ -f openai-response.json ]; then
+              python3 -c "
+                import json
+                import sys
+                try:
+                    with open('openai-response.json', 'r') as f:
+                        data = json.load(f)
+                    content = data['choices'][0]['message']['content']
+                    print('## AI-Powered Business Impact Analysis')
+                    print('')
+                    print(content)
+                except Exception as e:
+                    print('## Business Impact Summary (Fallback)')
+                    print('')
+                    print('*AI analysis unavailable - using rule-based analysis*')
+                    print('')
+                    sys.exit(1)
+              " > business-summary.md
+            else
+              echo "Failed to get AI response, using fallback analysis"
+              echo "## Business Impact Summary (Fallback)" > business-summary.md
+            fi
+          else
+            echo "OpenAI API key not configured, using rule-based analysis"
+            echo "## Business Impact Summary (Rule-Based)" > business-summary.md
+          fi
+          
+          # Fallback to rule-based analysis if AI fails
+          if [ ! -s business-summary.md ] || grep -q "Fallback" business-summary.md; then
+            echo "" >> business-summary.md
+            echo "*Add OPENAI_API_KEY secret for AI-powered analysis*" >> business-summary.md
+            echo "" >> business-summary.md
+            
+            PR_TITLE="${{ github.event.pull_request.title }}"
+            echo "**Change:** $PR_TITLE" >> business-summary.md
+            echo "" >> business-summary.md
+            
+            # Analyze impact based on file changes
+            # Use git-changed-files output first, then fallback to other methods
+            ALL_FILES="${{ steps.git-changed-files.outputs.all_changed_files }}"
+            if [ -z "$ALL_FILES" ]; then
+              ALL_FILES="${{ steps.changed-files.outputs.all_changed_files }}"
+            fi
+            if [ -z "$ALL_FILES" ]; then
+              ALL_FILES="${{ steps.manual-changed-files.outputs.all_changed_files }}"
+            fi
+            
+            echo "### Impact Assessment" >> business-summary.md
+            echo "" >> business-summary.md
+            
+            # Determine impact level
+            UI_FILES=$(echo "$ALL_FILES" | tr ' ' '\n' | grep -E "(popup|options|html|css)" || true)
+            CORE_FILES=$(echo "$ALL_FILES" | tr ' ' '\n' | grep -E "(cart|confirmation|purchase)" || true)
+            
+            if echo "$ALL_FILES" | grep -qE "(manifest\.json|service_worker)"; then
+              echo "High Impact: Core extension functionality changes" >> business-summary.md
+            elif [ -n "$CORE_FILES" ]; then
+              echo "Medium Impact: Purchase tracking functionality changes" >> business-summary.md
+            elif [ -n "$UI_FILES" ]; then
+              echo "Low Impact: User interface improvements" >> business-summary.md
+            else
+              echo "Minimal Impact: Documentation or minor changes" >> business-summary.md
+            fi
+            echo "" >> business-summary.md
+            
+            # Feature areas affected
+            echo "### Features Affected" >> business-summary.md
+            echo "" >> business-summary.md
+            
+            if echo "$ALL_FILES" | grep -q "cart"; then
+              echo "- Shopping cart management" >> business-summary.md
+            fi
+            
+            if echo "$ALL_FILES" | grep -q "confirmation"; then
+              echo "- Purchase confirmations" >> business-summary.md
+            fi
+            
+            if echo "$ALL_FILES" | grep -qE "(axs|etix|tm)"; then
+              echo "- Ticket vendor integrations" >> business-summary.md
+            fi
+            
+            if echo "$ALL_FILES" | grep -qE "(popup|options)"; then
+              echo "- User interface and settings" >> business-summary.md
+            fi
+            
+            if echo "$ALL_FILES" | grep -q "email"; then
+              echo "- Email functionality" >> business-summary.md
+            fi
+            
+            echo "" >> business-summary.md
+            echo "### Recommended Testing" >> business-summary.md
+            echo "" >> business-summary.md
+            echo "- [ ] Test on Chrome Web Store staging environment" >> business-summary.md
+            echo "- [ ] Verify extension permissions haven't changed unexpectedly" >> business-summary.md
+            echo "- [ ] Test purchase flow on affected ticket vendors" >> business-summary.md
+            echo "- [ ] Verify UI changes don't break user workflows" >> business-summary.md
+          fi
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            let comment = '';
+            
+            // Add code review results
+            if (fs.existsSync('code-review-results.md')) {
+              const codeReview = fs.readFileSync('code-review-results.md', 'utf8');
+              comment += codeReview + '\n\n';
+            }
+            // Add technical summary
+            if (fs.existsSync('technical-summary.md')) {
+              const techSummary = fs.readFileSync('technical-summary.md', 'utf8');
+              comment += techSummary + '\n\n';
+            }
+            // Add business summary
+            if (fs.existsSync('business-summary.md')) {
+              const businessSummary = fs.readFileSync('business-summary.md', 'utf8');
+              comment += businessSummary + '\n\n';
+            }
+            comment += '---\n*This analysis was automatically generated by GitHub Actions*';
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+      - name: Upload analysis artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-analysis-${{ github.event.pull_request.number }}
+          path: |
+            code-review-results.md
+            technical-summary.md
+            business-summary.md
