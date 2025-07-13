@@ -272,48 +272,97 @@ jobs:
             # Create a safer JSON payload by encoding the content properly
             TECH_CONTENT=$(cat tech-prompt.txt | python3 -c "import sys; import json; content = sys.stdin.read(); print(json.dumps(content))")
             
-            # Create the JSON payload directly with variables
-            echo '{
-              "model": "gpt-4o-mini",
-              "messages": [
-                {
-                  "role": "system",
-                  "content": "You are a senior software engineer specializing in Chrome extensions, JavaScript, and web technologies. Provide detailed technical insights for code reviewers."
-                },
-                {
-                  "role": "user",
-                  "content": '"$TECH_CONTENT"'
-                }
-              ],
-              "max_tokens": 2000,
-              "temperature": 0.2
-            }' > tech-payload.json
-            
-            curl -s -X POST "https://api.openai.com/v1/chat/completions" \
-              -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
-              -H "Content-Type: application/json" \
-              -d @tech-payload.json > tech-response.json
-            
-            if [ -f tech-response.json ]; then
-              printf '%s\n' \
-                'import json' \
-                'import sys' \
-                '' \
-                'try:' \
-                '    with open("tech-response.json", "r") as f:' \
-                '        data = json.load(f)' \
-                '    content = data["choices"][0]["message"]["content"]' \
-                '    print("## AI-Powered Technical Analysis")' \
-                '    print("")' \
-                '    print(content)' \
-                '    print("")' \
-                'except Exception as e:' \
-                '    print("## Technical Summary (Fallback)")' \
-                '    print("")' \
-                '    sys.exit(1)' > parse_tech_response.py
-              python3 parse_tech_response.py > technical-summary.md
+            # Validate the content was created successfully
+            if [ -z "$TECH_CONTENT" ]; then
+              echo "Failed to encode content for API"
+              echo "## Technical Summary (Fallback - Encoding Error)" > technical-summary.md
             else
-              echo "## Technical Summary (Fallback)" > technical-summary.md
+              echo "Content encoded successfully, creating payload..."
+              
+              # Create the JSON payload directly with variables
+              echo '{
+                "model": "gpt-4o-mini",
+                "messages": [
+                  {
+                    "role": "system",
+                    "content": "You are a senior software engineer specializing in Chrome extensions, JavaScript, and web technologies. Provide detailed technical insights for code reviewers."
+                  },
+                  {
+                    "role": "user",
+                    "content": '"$TECH_CONTENT"'
+                  }
+                ],
+                "max_tokens": 2000,
+                "temperature": 0.2
+              }' > tech-payload.json
+              
+              # Validate the JSON payload
+              if python3 -m json.tool tech-payload.json > /dev/null 2>&1; then
+                echo "JSON payload is valid"
+                
+                # Make API call with better error handling
+                HTTP_STATUS=$(curl -w "%{http_code}" -s -X POST "https://api.openai.com/v1/chat/completions" \
+                  -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
+                  -H "Content-Type: application/json" \
+                  -d @tech-payload.json -o tech-response.json)
+                
+                echo "API Response Status: $HTTP_STATUS"
+                
+                if [ -f tech-response.json ] && [ -s tech-response.json ] && [ "$HTTP_STATUS" = "200" ]; then
+                  echo "API call successful, parsing response..."
+                  printf '%s\n' \
+                    'import json' \
+                    'import sys' \
+                    '' \
+                    'try:' \
+                    '    with open("tech-response.json", "r") as f:' \
+                    '        data = json.load(f)' \
+                    '    if "choices" in data and len(data["choices"]) > 0:' \
+                    '        content = data["choices"][0]["message"]["content"]' \
+                    '        print("## AI-Powered Technical Analysis")' \
+                    '        print("")' \
+                    '        print(content)' \
+                    '        print("")' \
+                    '    else:' \
+                    '        print("## Technical Summary (Fallback - No choices)")' \
+                    '        print("")' \
+                    '        print("API response did not contain expected data")' \
+                    '        print("")' \
+                    'except json.JSONDecodeError as e:' \
+                    '    print("## Technical Summary (Fallback - JSON Error)")' \
+                    '    print("")' \
+                    '    print(f"JSON parsing error: {e}")' \
+                    '    print("")' \
+                    'except Exception as e:' \
+                    '    print("## Technical Summary (Fallback - General Error)")' \
+                    '    print("")' \
+                    '    print(f"Error: {e}")' \
+                    '    print("")' > parse_tech_response.py
+                  python3 parse_tech_response.py > technical-summary.md
+                  
+                  # Check if the parsing was successful
+                  if [ $? -ne 0 ]; then
+                    echo "Python script failed, checking response content..."
+                    echo "Response content:"
+                    cat tech-response.json
+                    echo "## Technical Summary (Fallback - Script Error)" > technical-summary.md
+                  fi
+                else
+                  echo "API call failed or returned empty response"
+                  if [ -f tech-response.json ]; then
+                    echo "Response content:"
+                    cat tech-response.json
+                  fi
+                  echo "## Technical Summary (Fallback - API Error)" > technical-summary.md
+                  echo "" >> technical-summary.md
+                  echo "API call failed with status: $HTTP_STATUS" >> technical-summary.md
+                fi
+              else
+                echo "Invalid JSON payload created"
+                echo "Payload content:"
+                cat tech-payload.json
+                echo "## Technical Summary (Fallback - JSON Payload Error)" > technical-summary.md
+              fi
             fi
           else
             echo "## Technical Summary (Rule-Based)" > technical-summary.md
@@ -432,51 +481,95 @@ jobs:
             # Create a safer JSON payload by encoding the content properly
             BUSINESS_CONTENT=$(cat llm-prompt.txt | python3 -c "import sys; import json; content = sys.stdin.read(); print(json.dumps(content))")
             
-            # Create JSON payload for OpenAI API directly with variables
-            echo '{
-              "model": "gpt-4o-mini",
-              "messages": [
-                {
-                  "role": "system",
-                  "content": "You are a technical business analyst specializing in Chrome extensions and e-commerce applications. Provide clear, actionable insights for business stakeholders."
-                },
-                {
-                  "role": "user",
-                  "content": '"$BUSINESS_CONTENT"'
-                }
-              ],
-              "max_tokens": 2000,
-              "temperature": 0.3
-            }' > openai-payload.json
-            # Make API call to OpenAI
-            curl -s -X POST "https://api.openai.com/v1/chat/completions" \
-              -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
-              -H "Content-Type: application/json" \
-              -d @openai-payload.json > openai-response.json
-            
-            # Extract the response
-            if [ -f openai-response.json ]; then
-              printf '%s\n' \
-                'import json' \
-                'import sys' \
-                '' \
-                'try:' \
-                '    with open("openai-response.json", "r") as f:' \
-                '        data = json.load(f)' \
-                '    content = data["choices"][0]["message"]["content"]' \
-                '    print("## AI-Powered Business Impact Analysis")' \
-                '    print("")' \
-                '    print(content)' \
-                'except Exception as e:' \
-                '    print("## Business Impact Summary (Fallback)")' \
-                '    print("")' \
-                '    print("*AI analysis unavailable - using rule-based analysis*")' \
-                '    print("")' \
-                '    sys.exit(1)' > parse_business_response.py
-              python3 parse_business_response.py > business-summary.md
+            # Validate the content was created successfully
+            if [ -z "$BUSINESS_CONTENT" ]; then
+              echo "Failed to encode business content for API"
+              echo "## Business Impact Summary (Fallback - Encoding Error)" > business-summary.md
             else
-              echo "Failed to get AI response, using fallback analysis"
-              echo "## Business Impact Summary (Fallback)" > business-summary.md
+              echo "Business content encoded successfully, creating payload..."
+              
+              # Create JSON payload for OpenAI API directly with variables
+              echo '{
+                "model": "gpt-4o-mini",
+                "messages": [
+                  {
+                    "role": "system",
+                    "content": "You are a technical business analyst specializing in Chrome extensions and e-commerce applications. Provide clear, actionable insights for business stakeholders."
+                  },
+                  {
+                    "role": "user",
+                    "content": '"$BUSINESS_CONTENT"'
+                  }
+                ],
+                "max_tokens": 2000,
+                "temperature": 0.3
+              }' > openai-payload.json
+              
+              # Validate the JSON payload
+              if python3 -m json.tool openai-payload.json > /dev/null 2>&1; then
+                echo "Business JSON payload is valid"
+                
+                # Make API call to OpenAI with better error handling
+                HTTP_STATUS=$(curl -w "%{http_code}" -s -X POST "https://api.openai.com/v1/chat/completions" \
+                  -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
+                  -H "Content-Type: application/json" \
+                  -d @openai-payload.json -o openai-response.json)
+                
+                echo "Business API Response Status: $HTTP_STATUS"
+                
+                # Extract the response
+                if [ -f openai-response.json ] && [ -s openai-response.json ] && [ "$HTTP_STATUS" = "200" ]; then
+                  echo "Business API call successful, parsing response..."
+                  printf '%s\n' \
+                    'import json' \
+                    'import sys' \
+                    '' \
+                    'try:' \
+                    '    with open("openai-response.json", "r") as f:' \
+                    '        data = json.load(f)' \
+                    '    if "choices" in data and len(data["choices"]) > 0:' \
+                    '        content = data["choices"][0]["message"]["content"]' \
+                    '        print("## AI-Powered Business Impact Analysis")' \
+                    '        print("")' \
+                    '        print(content)' \
+                    '    else:' \
+                    '        print("## Business Impact Summary (Fallback - No choices)")' \
+                    '        print("")' \
+                    '        print("API response did not contain expected data")' \
+                    'except json.JSONDecodeError as e:' \
+                    '    print("## Business Impact Summary (Fallback - JSON Error)")' \
+                    '    print("")' \
+                    '    print(f"JSON parsing error: {e}")' \
+                    'except Exception as e:' \
+                    '    print("## Business Impact Summary (Fallback - General Error)")' \
+                    '    print("")' \
+                    '    print(f"Error: {e}")' > parse_business_response.py
+                  python3 parse_business_response.py > business-summary.md
+                  
+                  # Check if the parsing was successful
+                  if [ $? -ne 0 ]; then
+                    echo "Business Python script failed, checking response content..."
+                    echo "Business Response content:"
+                    cat openai-response.json
+                    echo "## Business Impact Summary (Fallback - Script Error)" > business-summary.md
+                  fi
+                else
+                  echo "Business API call failed or returned empty response"
+                  if [ -f openai-response.json ]; then
+                    echo "Business Response content:"
+                    cat openai-response.json
+                  fi
+                  echo "Failed to get AI response, using fallback analysis"
+                  echo "## Business Impact Summary (Fallback - API Error)" > business-summary.md
+                  echo "" >> business-summary.md
+                  echo "API call failed with status: $HTTP_STATUS" >> business-summary.md
+                fi
+              else
+                echo "Invalid business JSON payload created"
+                echo "Business Payload content:"
+                cat openai-payload.json
+                echo "## Business Impact Summary (Fallback - JSON Payload Error)" > business-summary.md
+              fi
             fi
           else
             echo "OpenAI API key not configured, using rule-based analysis"
