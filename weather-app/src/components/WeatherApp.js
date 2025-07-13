@@ -6,69 +6,132 @@ const WeatherApp = () => {
   const [weatherData, setWeatherData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [city, setCity] = useState('London');
+  const [location, setLocation] = useState('Oslo, Norway');
+  const [coordinates, setCoordinates] = useState({ lat: 59.9139, lon: 10.7522 }); // Oslo coordinates
 
-  // You'll need to get your own API key from https://openweathermap.org/api
-  const API_KEY = 'YOUR_API_KEY_HERE';
-  const BASE_URL = 'https://api.openweathermap.org/data/2.5/weather';
+  const MET_NO_BASE_URL = 'https://api.met.no/weatherapi/locationforecast/2.0/compact';
+  
+  // Popular cities with their coordinates
+  const popularCities = {
+    'Oslo, Norway': { lat: 59.9139, lon: 10.7522 },
+    'Bergen, Norway': { lat: 60.3913, lon: 5.3221 },
+    'Trondheim, Norway': { lat: 63.4305, lon: 10.3951 },
+    'London, UK': { lat: 51.5074, lon: -0.1278 },
+    'New York, USA': { lat: 40.7128, lon: -74.0060 },
+    'Tokyo, Japan': { lat: 35.6762, lon: 139.6503 },
+    'Paris, France': { lat: 48.8566, lon: 2.3522 },
+    'Sydney, Australia': { lat: -33.8688, lon: 151.2093 }
+  };
 
-  const fetchWeatherData = async (cityName) => {
+  const fetchWeatherData = async (lat, lon) => {
     setLoading(true);
     setError(null);
     
     try {
       const response = await axios.get(
-        `${BASE_URL}?q=${cityName}&appid=${API_KEY}&units=metric`
+        `${MET_NO_BASE_URL}?lat=${lat}&lon=${lon}`,
+        {
+          headers: {
+            'User-Agent': 'WeatherApp/1.0 (contact@example.com)' // Met.no requires a User-Agent
+          }
+        }
       );
-      setWeatherData(response.data);
+      
+      const data = response.data;
+      const currentWeather = data.properties.timeseries[0].data.instant.details;
+      const next1Hour = data.properties.timeseries[0].data.next_1_hours;
+      const next6Hours = data.properties.timeseries[0].data.next_6_hours;
+      
+      // Transform Met.no data to our format
+      const transformedData = {
+        coordinates: { lat, lon },
+        current: {
+          temperature: currentWeather.air_temperature,
+          humidity: currentWeather.relative_humidity,
+          pressure: currentWeather.air_pressure_at_sea_level,
+          windSpeed: currentWeather.wind_speed,
+          windDirection: currentWeather.wind_from_direction,
+          cloudCover: currentWeather.cloud_area_fraction
+        },
+        forecast: {
+          symbol: next1Hour?.summary?.symbol_code || next6Hours?.summary?.symbol_code || 'clearsky_day',
+          precipitation: next1Hour?.details?.precipitation_amount || next6Hours?.details?.precipitation_amount || 0
+        },
+        updated: data.properties.meta.updated_at
+      };
+      
+      setWeatherData(transformedData);
     } catch (err) {
-      setError(err.response?.data?.message || 'Failed to fetch weather data');
+      setError('Failed to fetch weather data from Met.no API');
+      console.error('Weather API Error:', err);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    // For demo purposes, we'll use mock data if no API key is provided
-    if (API_KEY === 'YOUR_API_KEY_HERE') {
-      setWeatherData({
-        name: 'London',
-        main: {
-          temp: 22,
-          feels_like: 24,
-          humidity: 65,
-          pressure: 1013
-        },
-        weather: [
-          {
-            main: 'Clear',
-            description: 'clear sky',
-            icon: '01d'
-          }
-        ],
-        wind: {
-          speed: 3.5
-        },
-        visibility: 10000
-      });
-    } else {
-      fetchWeatherData(city);
-    }
-  }, []);
+    // Fetch weather data for default location (Oslo)
+    fetchWeatherData(coordinates.lat, coordinates.lon);
+  }, [coordinates.lat, coordinates.lon]);
 
-  const handleSearch = (e) => {
+  const handleLocationChange = (e) => {
     e.preventDefault();
-    if (city.trim()) {
-      fetchWeatherData(city);
+    const selectedCity = popularCities[location];
+    if (selectedCity) {
+      setCoordinates(selectedCity);
+      fetchWeatherData(selectedCity.lat, selectedCity.lon);
     }
   };
 
-  const getWeatherIcon = (iconCode) => {
-    if (API_KEY === 'YOUR_API_KEY_HERE') {
-      // Return a generic icon for demo
-      return '☀️';
-    }
-    return `https://openweathermap.org/img/wn/${iconCode}@2x.png`;
+  const getWeatherIcon = (symbolCode) => {
+    // Map Met.no symbol codes to emoji icons
+    const iconMap = {
+      'clearsky_day': '☀️',
+      'clearsky_night': '🌙',
+      'fair_day': '🌤️',
+      'fair_night': '🌙',
+      'partlycloudy_day': '⛅',
+      'partlycloudy_night': '☁️',
+      'cloudy': '☁️',
+      'rainshowers_day': '🌦️',
+      'rainshowers_night': '🌧️',
+      'rain': '🌧️',
+      'lightrain': '🌦️',
+      'heavyrain': '🌧️',
+      'snow': '❄️',
+      'snowshowers_day': '🌨️',
+      'snowshowers_night': '🌨️',
+      'fog': '🌫️',
+      'sleet': '🌨️',
+      'thunderstorm': '⛈️'
+    };
+    
+    return iconMap[symbolCode] || '🌤️';
+  };
+
+  const getWeatherDescription = (symbolCode) => {
+    const descriptions = {
+      'clearsky_day': 'Clear sky',
+      'clearsky_night': 'Clear sky',
+      'fair_day': 'Fair',
+      'fair_night': 'Fair',
+      'partlycloudy_day': 'Partly cloudy',
+      'partlycloudy_night': 'Partly cloudy',
+      'cloudy': 'Cloudy',
+      'rainshowers_day': 'Rain showers',
+      'rainshowers_night': 'Rain showers',
+      'rain': 'Rain',
+      'lightrain': 'Light rain',
+      'heavyrain': 'Heavy rain',
+      'snow': 'Snow',
+      'snowshowers_day': 'Snow showers',
+      'snowshowers_night': 'Snow showers',
+      'fog': 'Fog',
+      'sleet': 'Sleet',
+      'thunderstorm': 'Thunderstorm'
+    };
+    
+    return descriptions[symbolCode] || 'Unknown';
   };
 
   return (
@@ -76,16 +139,18 @@ const WeatherApp = () => {
       <div className="weather-container">
         <h1>Weather App</h1>
         
-        <form onSubmit={handleSearch} className="search-form">
-          <input
-            type="text"
-            value={city}
-            onChange={(e) => setCity(e.target.value)}
-            placeholder="Enter city name..."
+        <form onSubmit={handleLocationChange} className="search-form">
+          <select
+            value={location}
+            onChange={(e) => setLocation(e.target.value)}
             className="search-input"
-          />
+          >
+            {Object.keys(popularCities).map(city => (
+              <option key={city} value={city}>{city}</option>
+            ))}
+          </select>
           <button type="submit" className="search-button">
-            Search
+            Get Weather
           </button>
         </form>
 
@@ -95,67 +160,71 @@ const WeatherApp = () => {
         
         {weatherData && !loading && (
           <div className="weather-info">
-            <div className="city-name">{weatherData.name}</div>
+            <div className="city-name">{location}</div>
             
             <div className="weather-main">
               <div className="weather-icon">
-                {API_KEY === 'YOUR_API_KEY_HERE' ? (
-                  <span className="demo-icon">☀️</span>
-                ) : (
-                  <img 
-                    src={getWeatherIcon(weatherData.weather[0].icon)} 
-                    alt={weatherData.weather[0].description}
-                  />
-                )}
+                <span className="demo-icon">
+                  {getWeatherIcon(weatherData.forecast.symbol)}
+                </span>
               </div>
               
-              <div className="temperature">{Math.round(weatherData.main.temp)}°C</div>
+              <div className="temperature">
+                {Math.round(weatherData.current.temperature)}°C
+              </div>
               
               <div className="weather-description">
-                {weatherData.weather[0].description}
+                {getWeatherDescription(weatherData.forecast.symbol)}
               </div>
             </div>
             
             <div className="weather-details">
               <div className="detail-item">
-                <span className="label">Feels like:</span>
-                <span className="value">{Math.round(weatherData.main.feels_like)}°C</span>
-              </div>
-              
-              <div className="detail-item">
                 <span className="label">Humidity:</span>
-                <span className="value">{weatherData.main.humidity}%</span>
+                <span className="value">{Math.round(weatherData.current.humidity)}%</span>
               </div>
               
               <div className="detail-item">
                 <span className="label">Pressure:</span>
-                <span className="value">{weatherData.main.pressure} hPa</span>
+                <span className="value">{Math.round(weatherData.current.pressure)} hPa</span>
               </div>
               
               <div className="detail-item">
                 <span className="label">Wind Speed:</span>
-                <span className="value">{weatherData.wind.speed} m/s</span>
+                <span className="value">{Math.round(weatherData.current.windSpeed * 10) / 10} m/s</span>
               </div>
               
-              {weatherData.visibility && (
+              <div className="detail-item">
+                <span className="label">Cloud Cover:</span>
+                <span className="value">{Math.round(weatherData.current.cloudCover)}%</span>
+              </div>
+
+              {weatherData.forecast.precipitation > 0 && (
                 <div className="detail-item">
-                  <span className="label">Visibility:</span>
-                  <span className="value">{weatherData.visibility / 1000} km</span>
+                  <span className="label">Precipitation:</span>
+                  <span className="value">{weatherData.forecast.precipitation} mm</span>
                 </div>
               )}
+
+              <div className="detail-item">
+                <span className="label">Coordinates:</span>
+                <span className="value">
+                  {weatherData.coordinates.lat.toFixed(2)}, {weatherData.coordinates.lon.toFixed(2)}
+                </span>
+              </div>
             </div>
           </div>
         )}
         
-        {API_KEY === 'YOUR_API_KEY_HERE' && (
-          <div className="api-notice">
-            <p>📝 <strong>Note:</strong> This is using demo data. To get real weather data:</p>
-            <ol>
-              <li>Get a free API key from <a href="https://openweathermap.org/api" target="_blank" rel="noopener noreferrer">OpenWeatherMap</a></li>
-              <li>Replace 'YOUR_API_KEY_HERE' in WeatherApp.js with your actual API key</li>
-            </ol>
-          </div>
-        )}
+        <div className="api-notice">
+          <p>🌤️ <strong>Weather data provided by:</strong></p>
+          <p>
+            <a href="https://api.met.no/" target="_blank" rel="noopener noreferrer">
+              Norwegian Meteorological Institute (Met.no)
+            </a>
+          </p>
+          <p>No API key required! Select a city from the dropdown to see current weather conditions.</p>
+        </div>
       </div>
     </div>
   );
